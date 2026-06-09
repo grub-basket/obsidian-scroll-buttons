@@ -4,22 +4,27 @@ import {
   Plugin,
   PluginSettingTab,
   Setting,
+  WorkspaceContainer,
   WorkspaceWindow,
+  setIcon,
 } from "obsidian";
 
 type ScrollMode = "top" | "up" | "down" | "bottom";
 
 interface ButtonDef {
   mode: ScrollMode;
+  /** Lucide icon id (rendered via setIcon). */
+  icon: string;
+  /** Human-readable label, used for the command name and tooltip. */
   label: string;
 }
 
-/** The four buttons, ordered top → bottom on screen. Positioning lives in styles.css. */
+/** The four buttons, ordered top → bottom on screen. */
 const BUTTON_DEFS: ButtonDef[] = [
-  { mode: "top", label: "⇈" },
-  { mode: "up", label: "↑" },
-  { mode: "down", label: "↓" },
-  { mode: "bottom", label: "⇊" },
+  { mode: "top", icon: "chevrons-up", label: "Page top" },
+  { mode: "up", icon: "chevron-up", label: "Page up" },
+  { mode: "down", icon: "chevron-down", label: "Page down" },
+  { mode: "bottom", icon: "chevrons-down", label: "Page bottom" },
 ];
 
 /** Amount of overlap kept between pages when scrolling, in px. */
@@ -46,8 +51,12 @@ const DEFAULT_SETTINGS: PageScrollSettings = {
 export default class PageScrollPlugin extends Plugin {
   settings: PageScrollSettings;
 
-  /** Every document we have rendered buttons into (main window + pop-outs). */
-  private docs = new Set<Document>();
+  /**
+   * One button container per workspace root (main window + pop-outs).
+   * Keyed by the WorkspaceContainer so the buttons anchor to the editor
+   * area, not the whole window — they don't overlap the sidebars.
+   */
+  private containers = new Map<WorkspaceContainer, HTMLElement>();
 
   async onload() {
     await this.loadSettings();
@@ -55,53 +64,54 @@ export default class PageScrollPlugin extends Plugin {
     for (const def of BUTTON_DEFS) {
       this.addCommand({
         id: `page-scroll-${def.mode}`,
-        name: `Page ${def.mode}`,
+        name: def.label,
+        // No default hotkeys — bind your own in Settings → Hotkeys.
         callback: () => this.scroll(def.mode, activeDocument),
-        hotkeys:
-          def.mode === "up"
-            ? [{ key: "AudioVolumeUp", modifiers: [] }]
-            : def.mode === "down"
-              ? [{ key: "AudioVolumeDown", modifiers: [] }]
-              : [],
       });
     }
 
     this.addSettingTab(new PageScrollSettingTab(this.app, this));
 
-    // Add buttons once the workspace (and any restored pop-out windows) exists.
     this.app.workspace.onLayoutReady(() => {
-      this.addButtonsToDocument(document);
-      this.app.workspace.iterateAllLeaves((leaf) =>
-        this.addButtonsToDocument(leaf.view.containerEl.ownerDocument)
-      );
-      this.updateVisibility();
+      // Track the main window's root plus any pop-outs restored on startup.
+      this.trackContainer(this.app.workspace.rootSplit);
+      const floating = (
+        this.app.workspace as unknown as {
+          floatingSplit?: { children?: WorkspaceContainer[] };
+        }
+      ).floatingSplit;
+      floating?.children?.forEach((c) => this.trackContainer(c));
+      this.renderAll();
     });
 
-    // Keep pop-out windows in sync.
     this.registerEvent(
-      this.app.workspace.on("window-open", (win: WorkspaceWindow) =>
-        this.addButtonsToDocument(win.doc)
-      )
+      this.app.workspace.on("window-open", (win: WorkspaceWindow) => {
+        this.trackContainer(win);
+        this.renderAll();
+      })
     );
     this.registerEvent(
       this.app.workspace.on("window-close", (win: WorkspaceWindow) =>
-        this.removeButtonsFromDocument(win.doc)
+        this.untrackContainer(win)
       )
     );
 
-    // Re-evaluate smart-hide whenever the focused pane changes.
+    // Recompute visibility (smart-hide) whenever the focused pane changes.
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => this.updateVisibility())
     );
     this.registerEvent(
       this.app.workspace.on("layout-change", () => this.updateVisibility())
     );
+    // Sidebar resize/collapse changes the right-edge offset.
+    this.registerEvent(
+      this.app.workspace.on("resize", () => this.updateVisibility())
+    );
   }
 
   onunload() {
-    for (const doc of [...this.docs]) {
-      this.removeButtonsFromDocument(doc);
-    }
+    for (const container of this.containers.values()) container.remove();
+    this.containers.clear();
   }
 
   async loadSettings() {
@@ -117,16 +127,90 @@ export default class PageScrollPlugin extends Plugin {
 
   async saveSettings() {
     await this.saveData(this.settings);
-    this.refreshButtons();
+    // Re-reconcile every window so changes apply everywhere, immediately.
+    this.renderAll();
   }
+
+  // --- Window tracking ------------------------------------------------------
+
+  private trackContainer(root: WorkspaceContainer) {
+    if (this.containers.has(root)) return;
+    const container = root.doc.body.createDiv({ cls: "pagescroll-container" });
+    this.containers.set(root, container);
+  }
+
+  /**
+   * Right-edge offset (px) for a window's buttons. On the main window we add
+   * the width of the right sidebar so the buttons sit over the editor content
+   * instead of overlapping the panel; pop-outs have no sidebar.
+   */
+  private rightInset(root: WorkspaceContainer): number {
+    const base = 12;
+    if (root !== this.app.workspace.rootSplit) return base;
+    const right = this.app.workspace.rightSplit as unknown as {
+      collapsed?: boolean;
+      containerEl?: HTMLElement;
+    };
+    if (!right || right.collapsed) return base;
+    return base + (right.containerEl?.offsetWidth ?? 0);
+  }
+
+  private untrackContainer(root: WorkspaceContainer) {
+    this.containers.get(root)?.remove();
+    this.containers.delete(root);
+  }
+
+  // --- Rendering ------------------------------------------------------------
+
+  /** Rebuild button structure in every window, then apply visibility. */
+  private renderAll() {
+    for (const [root, container] of this.containers) {
+      this.renderButtons(root, container);
+    }
+    this.updateVisibility();
+  }
+
+  /** (Re)build the buttons inside one root's container from current settings. */
+  private renderButtons(root: WorkspaceContainer, container: HTMLElement) {
+    container.empty();
+    if (!this.settings.showButtons) return;
+
+    for (const def of BUTTON_DEFS) {
+      if (!this.settings.enabledButtons[def.mode]) continue;
+
+      const button = container.createEl("button", {
+        cls: ["pagescroll-button", "clickable-icon"],
+        attr: { "aria-label": def.label, id: `${def.mode}TriskiPageBtn` },
+      });
+      setIcon(button, def.icon);
+      button.onclick = () => this.scroll(def.mode, root.doc);
+    }
+  }
+
+  /** Toggle visibility classes on every root's container (cheap; event-safe). */
+  private updateVisibility() {
+    for (const [root, container] of this.containers) {
+      const hidden =
+        !this.settings.showButtons ||
+        (this.settings.smartHide && this.getScrollEl(root.doc) == null);
+      container.toggleClass("pagescroll-hidden", hidden);
+      container.toggleClass(
+        "pagescroll-hover-only",
+        this.settings.showButtons && this.settings.hoverOnly
+      );
+      // Keep the buttons clear of the right sidebar (main window only).
+      container.style.right = `${this.rightInset(root)}px`;
+    }
+  }
+
+  // --- Scrolling ------------------------------------------------------------
 
   /**
    * Resolve the scrollable element for the active pane within `doc`.
    * Falls back to any markdown/text pane living in that document.
    */
   private getScrollEl(doc: Document): HTMLElement | null {
-    const inDoc = (el?: HTMLElement | null) =>
-      !!el && el.ownerDocument === doc;
+    const inDoc = (el?: HTMLElement | null) => !!el && el.ownerDocument === doc;
 
     // Prefer the active markdown view, but only if it lives in this document.
     let view = this.app.workspace.getActiveViewOfType(MarkdownView);
@@ -141,18 +225,18 @@ export default class PageScrollPlugin extends Plugin {
     }
 
     if (view) {
-      const renderer = view as unknown as {
+      const internal = view as unknown as {
         previewMode?: { renderer?: { previewEl?: HTMLElement } };
         editMode?: { cm?: { scrollDOM?: HTMLElement } };
       };
       const el =
         view.getMode() === "preview"
-          ? renderer.previewMode?.renderer?.previewEl
-          : renderer.editMode?.cm?.scrollDOM;
+          ? internal.previewMode?.renderer?.previewEl
+          : internal.editMode?.cm?.scrollDOM;
       if (el) return el;
     }
 
-    // Fallback for other TextFileView panes (e.g. canvas, custom editors).
+    // Fallback for other TextFileView panes (canvas, custom editors, …).
     const fileView = (
       this.app.workspace as unknown as {
         getActiveFileView(): { containerEl: HTMLElement } | null;
@@ -185,65 +269,6 @@ export default class PageScrollPlugin extends Plugin {
       case "bottom":
         scrollEl.scroll(0, scrollEl.scrollHeight);
         break;
-    }
-  }
-
-  private buttonId(mode: ScrollMode) {
-    return `${mode}TriskiPageBtn`;
-  }
-
-  /** Render the four buttons into `doc` (no-op if already present or disabled). */
-  private addButtonsToDocument(doc: Document) {
-    this.docs.add(doc);
-    if (!this.settings.showButtons) return;
-
-    for (const def of BUTTON_DEFS) {
-      if (!this.settings.enabledButtons[def.mode]) continue;
-      const id = this.buttonId(def.mode);
-      if (doc.getElementById(id)) continue;
-
-      const button = doc.body.createEl("button", {
-        attr: { id },
-        cls: ["pagescroll-button", `pagescroll-${def.mode}`],
-        text: def.label,
-      });
-
-      this.registerDomEvent(button, "click", () => this.scroll(def.mode, doc));
-    }
-  }
-
-  /** Remove the buttons from `doc`. */
-  private removeButtonsFromDocument(doc: Document) {
-    for (const def of BUTTON_DEFS) {
-      doc.getElementById(this.buttonId(def.mode))?.remove();
-    }
-    this.docs.delete(doc);
-  }
-
-  /** Apply the current settings to every tracked document. */
-  private refreshButtons() {
-    for (const doc of [...this.docs]) {
-      // Remove any button that is now disabled (or all of them if hidden).
-      for (const def of BUTTON_DEFS) {
-        const enabled =
-          this.settings.showButtons && this.settings.enabledButtons[def.mode];
-        if (!enabled) doc.getElementById(this.buttonId(def.mode))?.remove();
-      }
-      if (this.settings.showButtons) this.addButtonsToDocument(doc);
-    }
-    this.updateVisibility();
-  }
-
-  /** Show/hide buttons per document based on the smart-hide setting. */
-  private updateVisibility() {
-    if (!this.settings.showButtons) return;
-    for (const doc of this.docs) {
-      const visible = !this.settings.smartHide || this.getScrollEl(doc) != null;
-      for (const def of BUTTON_DEFS) {
-        const button = doc.getElementById(this.buttonId(def.mode));
-        button?.toggleClass("pagescroll-hidden", !visible);
-        button?.toggleClass("pagescroll-hover-only", this.settings.hoverOnly);
-      }
     }
   }
 }
@@ -302,19 +327,12 @@ class PageScrollSettingTab extends PluginSettingTab {
       cls: "setting-item-description",
     });
 
-    const BUTTON_LABELS: { mode: ScrollMode; name: string }[] = [
-      { mode: "top", name: "Page top (⇈)" },
-      { mode: "up", name: "Page up (↑)" },
-      { mode: "down", name: "Page down (↓)" },
-      { mode: "bottom", name: "Page bottom (⇊)" },
-    ];
-
-    for (const { mode, name } of BUTTON_LABELS) {
-      new Setting(containerEl).setName(name).addToggle((toggle) =>
+    for (const def of BUTTON_DEFS) {
+      new Setting(containerEl).setName(def.label).addToggle((toggle) =>
         toggle
-          .setValue(this.plugin.settings.enabledButtons[mode])
+          .setValue(this.plugin.settings.enabledButtons[def.mode])
           .onChange(async (value) => {
-            this.plugin.settings.enabledButtons[mode] = value;
+            this.plugin.settings.enabledButtons[def.mode] = value;
             await this.plugin.saveSettings();
           })
       );
