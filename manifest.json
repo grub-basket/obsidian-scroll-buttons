@@ -4,7 +4,7 @@
 	"version": "1.1.0",
 	"minAppVersion": "0.15.0",
 	"description": "Page Up|Down|Top|Bottom",
-	"author": "triski",
-	"authorUrl": "https://github.com/chenshutian9610",
+	"author": "Human",
+	"authorUrl": "https://github.com/grub-basket/obsidian-scroll-buttons",
 	"isDesktopOnly": false
 }

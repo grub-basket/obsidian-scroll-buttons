@@ -26,3 +26,10 @@ The buttons also render in pop-out windows, not just the main window.
 ### mobile
 
 ![mobile](_files/mobile_example.png)
+
+## Credits
+
+Originally created by [triski](https://github.com/chenshutian9610) as
+[obsidian-pagescroll-plugin](https://github.com/chenshutian9610/obsidian-pagescroll-plugin).
+This is an independent continuation with added settings, multi-window support, and
+fixes. Licensed under MIT (see `LICENSE`).
