@@ -1,0 +1,49 @@
+/* Page Scroll — on-screen navigation buttons */
+
+/* One container per window, holding the stacked buttons. */
+/* `right` is set from JS so the buttons clear the right sidebar. */
+.pagescroll-container {
+  position: fixed;
+  right: 12px;
+  bottom: 12%;
+  z-index: var(--layer-popover, 30);
+
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+
+  transition: opacity 0.15s ease-in-out;
+}
+
+/* Obsidian adds `is-mobile` to <body>; nudge the stack higher and inward. */
+.is-mobile .pagescroll-container {
+  right: 16px;
+  bottom: 40%;
+}
+
+.pagescroll-container.pagescroll-hidden {
+  display: none;
+}
+
+/* "Visible on hover only": fade the whole stack out until hovered. */
+.pagescroll-container.pagescroll-hover-only {
+  opacity: 0;
+}
+.pagescroll-container.pagescroll-hover-only:hover {
+  opacity: 1;
+}
+
+.pagescroll-button {
+  width: 28px;
+  height: 28px;
+  color: var(--text-muted);
+  background-color: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s, 4px);
+  cursor: pointer;
+}
+
+.pagescroll-button:hover {
+  color: var(--text-normal);
+  background-color: var(--background-modifier-hover);
+}
