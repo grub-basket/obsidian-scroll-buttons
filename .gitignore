@@ -1,3 +1,6 @@
 node_modules/
 .vscode/
-main.js
+data.json
+.deploy-target
+.DS_Store
+*.log

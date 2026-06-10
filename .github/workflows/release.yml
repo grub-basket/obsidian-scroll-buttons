@@ -1,0 +1,30 @@
+name: Release
+on:
+  push:
+    tags: ["*"]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          NOTES_FILE="release-notes/${TAG}.md"
+          if [ -f "$NOTES_FILE" ]; then
+            NOTES_ARG=(--notes-file "$NOTES_FILE")
+          else
+            PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+            if [ -z "$PREV_TAG" ]; then
+              LOG=$(git log --pretty=format:'- %s')
+            else
+              LOG=$(git log "$PREV_TAG"..HEAD --pretty=format:'- %s')
+            fi
+            NOTES_ARG=(--notes "## Changes since ${PREV_TAG:-the beginning}"$'\n\n'"$LOG")
+          fi
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --title "$TAG" "${NOTES_ARG[@]}"
+          gh release upload "$TAG" main.js manifest.json styles.css --clobber
