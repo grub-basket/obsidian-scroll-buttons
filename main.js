@@ -58,7 +58,7 @@ var PageScrollPlugin = class extends import_obsidian.Plugin {
         id: `page-scroll-${def.mode}`,
         name: def.label,
         // No default hotkeys — bind your own in Settings → Hotkeys.
-        callback: () => this.scroll(def.mode, activeDocument)
+        callback: () => this.scroll(def.mode)
       });
     }
     this.addSettingTab(new PageScrollSettingTab(this.app, this));
@@ -157,13 +157,15 @@ var PageScrollPlugin = class extends import_obsidian.Plugin {
         attr: { "aria-label": def.label, id: `${def.mode}TriskiPageBtn` }
       });
       (0, import_obsidian.setIcon)(button, def.icon);
-      button.onclick = () => this.scroll(def.mode, root.doc);
+      button.onclick = () => this.scroll(def.mode, root);
     }
   }
   /** Toggle visibility classes on every root's container (cheap; event-safe). */
   updateVisibility() {
     for (const [root, container] of this.containers) {
-      const hidden = !this.settings.showButtons || this.settings.smartHide && this.getScrollEl(root.doc) == null;
+      const scrollEl = this.getScrollEl(root);
+      const noOverflow = !!scrollEl && scrollEl.scrollHeight <= scrollEl.clientHeight + 1;
+      const hidden = !this.settings.showButtons || scrollEl == null || this.settings.smartHide && noOverflow;
       container.toggleClass("pagescroll-hidden", hidden);
       container.toggleClass(
         "pagescroll-hover-only",
@@ -174,39 +176,28 @@ var PageScrollPlugin = class extends import_obsidian.Plugin {
   }
   // --- Scrolling ------------------------------------------------------------
   /**
-   * Resolve the scrollable element for the active pane within `doc`.
-   * Falls back to any markdown/text pane living in that document.
+   * The Markdown view that is the *active* pane of `root` (or of the whole
+   * workspace if `root` is omitted). Returns null for any other active view —
+   * e.g. custom plugin editors like Stashpad — so the buttons stay hidden
+   * there instead of acting on a background markdown tab.
    */
-  getScrollEl(doc) {
-    var _a, _b, _c, _d;
-    const inDoc = (el) => !!el && el.ownerDocument === doc;
-    let view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
-    if (!view || !inDoc(view.containerEl)) {
-      view = null;
-      for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
-        if (leaf.view instanceof import_obsidian.MarkdownView && inDoc(leaf.view.containerEl)) {
-          view = leaf.view;
-          break;
-        }
-      }
-    }
-    if (view) {
-      const internal = view;
-      const el = view.getMode() === "preview" ? (_b = (_a = internal.previewMode) == null ? void 0 : _a.renderer) == null ? void 0 : _b.previewEl : (_d = (_c = internal.editMode) == null ? void 0 : _c.cm) == null ? void 0 : _d.scrollDOM;
-      if (el)
-        return el;
-    }
-    const fileView = this.app.workspace.getActiveFileView();
-    if (fileView && inDoc(fileView.containerEl)) {
-      const el = fileView.containerEl.children[1];
-      if (el instanceof HTMLElement)
-        return el;
-    }
-    return null;
+  getActiveMarkdownView(root) {
+    const leaf = this.app.workspace.getMostRecentLeaf(root);
+    return (leaf == null ? void 0 : leaf.view) instanceof import_obsidian.MarkdownView ? leaf.view : null;
   }
-  /** Scroll the active pane in `doc`. */
-  scroll(mode, doc) {
-    const scrollEl = this.getScrollEl(doc);
+  /** Resolve the scrollable element for the active Markdown pane of `root`. */
+  getScrollEl(root) {
+    var _a, _b, _c, _d;
+    const view = this.getActiveMarkdownView(root);
+    if (!view)
+      return null;
+    const internal = view;
+    const el = view.getMode() === "preview" ? (_b = (_a = internal.previewMode) == null ? void 0 : _a.renderer) == null ? void 0 : _b.previewEl : (_d = (_c = internal.editMode) == null ? void 0 : _c.cm) == null ? void 0 : _d.scrollDOM;
+    return el != null ? el : null;
+  }
+  /** Scroll the active Markdown pane of `root` (or the workspace's active one). */
+  scroll(mode, root) {
+    const scrollEl = this.getScrollEl(root);
     if (!scrollEl)
       return;
     const page = scrollEl.clientHeight - PAGE_OVERLAP;
@@ -243,7 +234,7 @@ var PageScrollSettingTab = class extends import_obsidian.PluginSettingTab {
       })
     );
     new import_obsidian.Setting(containerEl).setName("Smart hide").setDesc(
-      "Automatically hide the buttons when the focused pane has nothing to scroll (e.g. non-editor views), so they don't block other plugins."
+      "Also hide the buttons when the current note is short enough that there's nothing to scroll. (Non-editor panes \u2014 e.g. other plugins' views \u2014 always hide.)"
     ).addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.smartHide).onChange(async (value) => {
         this.plugin.settings.smartHide = value;

@@ -66,7 +66,7 @@ export default class PageScrollPlugin extends Plugin {
         id: `page-scroll-${def.mode}`,
         name: def.label,
         // No default hotkeys — bind your own in Settings → Hotkeys.
-        callback: () => this.scroll(def.mode, activeDocument),
+        callback: () => this.scroll(def.mode),
       });
     }
 
@@ -183,16 +183,23 @@ export default class PageScrollPlugin extends Plugin {
         attr: { "aria-label": def.label, id: `${def.mode}TriskiPageBtn` },
       });
       setIcon(button, def.icon);
-      button.onclick = () => this.scroll(def.mode, root.doc);
+      button.onclick = () => this.scroll(def.mode, root);
     }
   }
 
   /** Toggle visibility classes on every root's container (cheap; event-safe). */
   private updateVisibility() {
     for (const [root, container] of this.containers) {
+      const scrollEl = this.getScrollEl(root);
+      // Always hide when the active pane isn't a Markdown editor (e.g. Stashpad
+      // or other custom plugin views) — the buttons can't scroll those.
+      // Smart-hide additionally hides when the note has nothing to scroll.
+      const noOverflow =
+        !!scrollEl && scrollEl.scrollHeight <= scrollEl.clientHeight + 1;
       const hidden =
         !this.settings.showButtons ||
-        (this.settings.smartHide && this.getScrollEl(root.doc) == null);
+        scrollEl == null ||
+        (this.settings.smartHide && noOverflow);
       container.toggleClass("pagescroll-hidden", hidden);
       container.toggleClass(
         "pagescroll-hover-only",
@@ -206,53 +213,35 @@ export default class PageScrollPlugin extends Plugin {
   // --- Scrolling ------------------------------------------------------------
 
   /**
-   * Resolve the scrollable element for the active pane within `doc`.
-   * Falls back to any markdown/text pane living in that document.
+   * The Markdown view that is the *active* pane of `root` (or of the whole
+   * workspace if `root` is omitted). Returns null for any other active view —
+   * e.g. custom plugin editors like Stashpad — so the buttons stay hidden
+   * there instead of acting on a background markdown tab.
    */
-  private getScrollEl(doc: Document): HTMLElement | null {
-    const inDoc = (el?: HTMLElement | null) => !!el && el.ownerDocument === doc;
-
-    // Prefer the active markdown view, but only if it lives in this document.
-    let view = this.app.workspace.getActiveViewOfType(MarkdownView);
-    if (!view || !inDoc(view.containerEl)) {
-      view = null;
-      for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
-        if (leaf.view instanceof MarkdownView && inDoc(leaf.view.containerEl)) {
-          view = leaf.view;
-          break;
-        }
-      }
-    }
-
-    if (view) {
-      const internal = view as unknown as {
-        previewMode?: { renderer?: { previewEl?: HTMLElement } };
-        editMode?: { cm?: { scrollDOM?: HTMLElement } };
-      };
-      const el =
-        view.getMode() === "preview"
-          ? internal.previewMode?.renderer?.previewEl
-          : internal.editMode?.cm?.scrollDOM;
-      if (el) return el;
-    }
-
-    // Fallback for other TextFileView panes (canvas, custom editors, …).
-    const fileView = (
-      this.app.workspace as unknown as {
-        getActiveFileView(): { containerEl: HTMLElement } | null;
-      }
-    ).getActiveFileView();
-    if (fileView && inDoc(fileView.containerEl)) {
-      const el = fileView.containerEl.children[1];
-      if (el instanceof HTMLElement) return el;
-    }
-
-    return null;
+  private getActiveMarkdownView(root?: WorkspaceContainer): MarkdownView | null {
+    const leaf = this.app.workspace.getMostRecentLeaf(root as never);
+    return leaf?.view instanceof MarkdownView ? leaf.view : null;
   }
 
-  /** Scroll the active pane in `doc`. */
-  scroll(mode: ScrollMode, doc: Document) {
-    const scrollEl = this.getScrollEl(doc);
+  /** Resolve the scrollable element for the active Markdown pane of `root`. */
+  private getScrollEl(root?: WorkspaceContainer): HTMLElement | null {
+    const view = this.getActiveMarkdownView(root);
+    if (!view) return null;
+
+    const internal = view as unknown as {
+      previewMode?: { renderer?: { previewEl?: HTMLElement } };
+      editMode?: { cm?: { scrollDOM?: HTMLElement } };
+    };
+    const el =
+      view.getMode() === "preview"
+        ? internal.previewMode?.renderer?.previewEl
+        : internal.editMode?.cm?.scrollDOM;
+    return el ?? null;
+  }
+
+  /** Scroll the active Markdown pane of `root` (or the workspace's active one). */
+  scroll(mode: ScrollMode, root?: WorkspaceContainer) {
+    const scrollEl = this.getScrollEl(root);
     if (!scrollEl) return;
 
     const page = scrollEl.clientHeight - PAGE_OVERLAP;
@@ -300,7 +289,7 @@ class PageScrollSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Smart hide")
       .setDesc(
-        "Automatically hide the buttons when the focused pane has nothing to scroll (e.g. non-editor views), so they don't block other plugins."
+        "Also hide the buttons when the current note is short enough that there's nothing to scroll. (Non-editor panes — e.g. other plugins' views — always hide.)"
       )
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.smartHide).onChange(async (value) => {
