@@ -163,6 +163,9 @@ var PageScrollPlugin = class extends import_obsidian.Plugin {
   /** Toggle visibility classes on every root's container (cheap; event-safe). */
   updateVisibility() {
     for (const [root, container] of this.containers) {
+      if (container.parentElement !== root.doc.body) {
+        root.doc.body.appendChild(container);
+      }
       const scrollEl = this.getScrollEl(root);
       const noOverflow = !!scrollEl && scrollEl.scrollHeight <= scrollEl.clientHeight + 1;
       const hidden = !this.settings.showButtons || scrollEl == null || this.settings.smartHide && noOverflow;
@@ -212,9 +215,27 @@ var PageScrollPlugin = class extends import_obsidian.Plugin {
         scrollEl.scroll(0, 0);
         break;
       case "bottom":
-        scrollEl.scroll(0, scrollEl.scrollHeight);
+        this.scrollToEnd(scrollEl);
         break;
     }
+  }
+  /**
+   * Scroll to the true bottom, re-checking over the next few frames. In reading
+   * mode, embeds/images render lazily and grow scrollHeight *after* the initial
+   * scroll, which would otherwise leave us stuck partway (issue #2). Keep
+   * nudging to the new bottom until it settles or we run out of attempts.
+   */
+  scrollToEnd(el, attempts = 12) {
+    var _a;
+    el.scroll(0, el.scrollHeight);
+    if (attempts <= 0)
+      return;
+    const win = (_a = el.ownerDocument.defaultView) != null ? _a : window;
+    win.requestAnimationFrame(() => {
+      if (Math.ceil(el.scrollTop + el.clientHeight) < el.scrollHeight) {
+        this.scrollToEnd(el, attempts - 1);
+      }
+    });
   }
 };
 var PageScrollSettingTab = class extends import_obsidian.PluginSettingTab {

@@ -190,6 +190,11 @@ export default class PageScrollPlugin extends Plugin {
   /** Toggle visibility classes on every root's container (cheap; event-safe). */
   private updateVisibility() {
     for (const [root, container] of this.containers) {
+      // Re-attach if Obsidian ever detaches the container (issue #4: buttons
+      // stop working / get buried). Stacking is handled by z-index in styles.css.
+      if (container.parentElement !== root.doc.body) {
+        root.doc.body.appendChild(container);
+      }
       const scrollEl = this.getScrollEl(root);
       // Always hide when the active pane isn't a Markdown editor (e.g. Stashpad
       // or other custom plugin views) — the buttons can't scroll those.
@@ -256,9 +261,26 @@ export default class PageScrollPlugin extends Plugin {
         scrollEl.scroll(0, 0);
         break;
       case "bottom":
-        scrollEl.scroll(0, scrollEl.scrollHeight);
+        this.scrollToEnd(scrollEl);
         break;
     }
+  }
+
+  /**
+   * Scroll to the true bottom, re-checking over the next few frames. In reading
+   * mode, embeds/images render lazily and grow scrollHeight *after* the initial
+   * scroll, which would otherwise leave us stuck partway (issue #2). Keep
+   * nudging to the new bottom until it settles or we run out of attempts.
+   */
+  private scrollToEnd(el: HTMLElement, attempts = 12) {
+    el.scroll(0, el.scrollHeight);
+    if (attempts <= 0) return;
+    const win = el.ownerDocument.defaultView ?? window;
+    win.requestAnimationFrame(() => {
+      if (Math.ceil(el.scrollTop + el.clientHeight) < el.scrollHeight) {
+        this.scrollToEnd(el, attempts - 1);
+      }
+    });
   }
 }
 
