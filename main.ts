@@ -27,9 +27,6 @@ const BUTTON_DEFS: ButtonDef[] = [
   { mode: "bottom", icon: "chevrons-down", label: "Page bottom" },
 ];
 
-/** Amount of overlap kept between pages when scrolling, in px. */
-const PAGE_OVERLAP = 60;
-
 interface PageScrollSettings {
   /** Master switch for the on-screen buttons. */
   showButtons: boolean;
@@ -39,6 +36,12 @@ interface PageScrollSettings {
   hoverOnly: boolean;
   /** Which of the four buttons to render. Commands/hotkeys are unaffected. */
   enabledButtons: Record<ScrollMode, boolean>;
+  /** Page up/down distance as a percentage of the viewport height. */
+  scrollPercent: number;
+  /** Use a separate distance when in Reading view. */
+  separateReadingSpeed: boolean;
+  /** Page up/down distance (% of viewport) used in Reading view. */
+  scrollPercentReading: number;
 }
 
 const DEFAULT_SETTINGS: PageScrollSettings = {
@@ -46,6 +49,9 @@ const DEFAULT_SETTINGS: PageScrollSettings = {
   smartHide: true,
   hoverOnly: false,
   enabledButtons: { top: true, up: true, down: true, bottom: true },
+  scrollPercent: 90,
+  separateReadingSpeed: false,
+  scrollPercentReading: 90,
 };
 
 export default class PageScrollPlugin extends Plugin {
@@ -244,12 +250,22 @@ export default class PageScrollPlugin extends Plugin {
     return el ?? null;
   }
 
+  /** Page up/down distance (px) for the active pane, honoring the speed settings. */
+  private pageDistance(scrollEl: HTMLElement, root?: WorkspaceContainer): number {
+    const reading = this.getActiveMarkdownView(root)?.getMode() === "preview";
+    const percent =
+      this.settings.separateReadingSpeed && reading
+        ? this.settings.scrollPercentReading
+        : this.settings.scrollPercent;
+    return scrollEl.clientHeight * (percent / 100);
+  }
+
   /** Scroll the active Markdown pane of `root` (or the workspace's active one). */
   scroll(mode: ScrollMode, root?: WorkspaceContainer) {
     const scrollEl = this.getScrollEl(root);
     if (!scrollEl) return;
 
-    const page = scrollEl.clientHeight - PAGE_OVERLAP;
+    const page = this.pageDistance(scrollEl, root);
     switch (mode) {
       case "up":
         scrollEl.scrollBy(0, -page);
@@ -331,6 +347,51 @@ class PageScrollSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         })
       );
+
+    new Setting(containerEl).setName("Scroll distance").setHeading();
+
+    new Setting(containerEl)
+      .setName("Page up/down distance")
+      .setDesc("How far a page up/down scrolls, as a percentage of the visible height.")
+      .addSlider((slider) =>
+        slider
+          .setLimits(20, 100, 5)
+          .setValue(this.plugin.settings.scrollPercent)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.settings.scrollPercent = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Separate distance in Reading view")
+      .setDesc("Use a different page up/down distance when viewing in Reading mode.")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.separateReadingSpeed)
+          .onChange(async (value) => {
+            this.plugin.settings.separateReadingSpeed = value;
+            await this.plugin.saveSettings();
+            this.display(); // show/hide the Reading-view slider
+          })
+      );
+
+    if (this.plugin.settings.separateReadingSpeed) {
+      new Setting(containerEl)
+        .setName("Reading view distance")
+        .setDesc("Page up/down distance used in Reading mode.")
+        .addSlider((slider) =>
+          slider
+            .setLimits(20, 100, 5)
+            .setValue(this.plugin.settings.scrollPercentReading)
+            .setDynamicTooltip()
+            .onChange(async (value) => {
+              this.plugin.settings.scrollPercentReading = value;
+              await this.plugin.saveSettings();
+            })
+        );
+    }
 
     new Setting(containerEl).setName("Visible buttons").setHeading();
     containerEl.createEl("p", {

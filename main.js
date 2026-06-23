@@ -34,12 +34,14 @@ var BUTTON_DEFS = [
   { mode: "down", icon: "chevron-down", label: "Page down" },
   { mode: "bottom", icon: "chevrons-down", label: "Page bottom" }
 ];
-var PAGE_OVERLAP = 60;
 var DEFAULT_SETTINGS = {
   showButtons: true,
   smartHide: true,
   hoverOnly: false,
-  enabledButtons: { top: true, up: true, down: true, bottom: true }
+  enabledButtons: { top: true, up: true, down: true, bottom: true },
+  scrollPercent: 90,
+  separateReadingSpeed: false,
+  scrollPercentReading: 90
 };
 var PageScrollPlugin = class extends import_obsidian.Plugin {
   constructor() {
@@ -198,12 +200,19 @@ var PageScrollPlugin = class extends import_obsidian.Plugin {
     const el = view.getMode() === "preview" ? (_b = (_a = internal.previewMode) == null ? void 0 : _a.renderer) == null ? void 0 : _b.previewEl : (_d = (_c = internal.editMode) == null ? void 0 : _c.cm) == null ? void 0 : _d.scrollDOM;
     return el != null ? el : null;
   }
+  /** Page up/down distance (px) for the active pane, honoring the speed settings. */
+  pageDistance(scrollEl, root) {
+    var _a;
+    const reading = ((_a = this.getActiveMarkdownView(root)) == null ? void 0 : _a.getMode()) === "preview";
+    const percent = this.settings.separateReadingSpeed && reading ? this.settings.scrollPercentReading : this.settings.scrollPercent;
+    return scrollEl.clientHeight * (percent / 100);
+  }
   /** Scroll the active Markdown pane of `root` (or the workspace's active one). */
   scroll(mode, root) {
     const scrollEl = this.getScrollEl(root);
     if (!scrollEl)
       return;
-    const page = scrollEl.clientHeight - PAGE_OVERLAP;
+    const page = this.pageDistance(scrollEl, root);
     switch (mode) {
       case "up":
         scrollEl.scrollBy(0, -page);
@@ -270,6 +279,28 @@ var PageScrollSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
+    new import_obsidian.Setting(containerEl).setName("Scroll distance").setHeading();
+    new import_obsidian.Setting(containerEl).setName("Page up/down distance").setDesc("How far a page up/down scrolls, as a percentage of the visible height.").addSlider(
+      (slider) => slider.setLimits(20, 100, 5).setValue(this.plugin.settings.scrollPercent).setDynamicTooltip().onChange(async (value) => {
+        this.plugin.settings.scrollPercent = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("Separate distance in Reading view").setDesc("Use a different page up/down distance when viewing in Reading mode.").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.separateReadingSpeed).onChange(async (value) => {
+        this.plugin.settings.separateReadingSpeed = value;
+        await this.plugin.saveSettings();
+        this.display();
+      })
+    );
+    if (this.plugin.settings.separateReadingSpeed) {
+      new import_obsidian.Setting(containerEl).setName("Reading view distance").setDesc("Page up/down distance used in Reading mode.").addSlider(
+        (slider) => slider.setLimits(20, 100, 5).setValue(this.plugin.settings.scrollPercentReading).setDynamicTooltip().onChange(async (value) => {
+          this.plugin.settings.scrollPercentReading = value;
+          await this.plugin.saveSettings();
+        })
+      );
+    }
     new import_obsidian.Setting(containerEl).setName("Visible buttons").setHeading();
     containerEl.createEl("p", {
       text: "Choose which buttons appear on screen. Commands and hotkeys stay available regardless.",
