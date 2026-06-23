@@ -28,6 +28,9 @@ __export(main_exports, {
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
+var import_view = require("@codemirror/view");
+var CARET_JUMP_THRESHOLD = 10;
+var MAX_CARET_HISTORY = 50;
 var BUTTON_DEFS = [
   { mode: "top", icon: "chevrons-up", label: "Page top" },
   { mode: "up", icon: "chevron-up", label: "Page up" },
@@ -52,6 +55,17 @@ var PageScrollPlugin = class extends import_obsidian.Plugin {
      * area, not the whole window — they don't overlap the sidebars.
      */
     this.containers = /* @__PURE__ */ new Map();
+    // --- Caret jump-list state (issue #1) ---
+    /** Recorded jump-origin positions, oldest → newest. */
+    this.caretHistory = [];
+    /** Pointer into caretHistory while navigating; -1 means "at the live cursor". */
+    this.caretIndex = -1;
+    /** The most recent cursor position seen (to detect jumps). */
+    this.lastCaret = null;
+    /** Live position captured when navigation starts, so forward can return to it. */
+    this.caretLive = null;
+    /** Set while we move the cursor ourselves, so it isn't recorded as a jump. */
+    this.suppressCaretRecord = false;
   }
   async onload() {
     await this.loadSettings();
@@ -63,6 +77,19 @@ var PageScrollPlugin = class extends import_obsidian.Plugin {
         callback: () => this.scroll(def.mode)
       });
     }
+    this.addCommand({
+      id: "caret-jump-back",
+      name: "Jump to previous cursor position",
+      callback: () => this.jumpCaret(-1)
+    });
+    this.addCommand({
+      id: "caret-jump-forward",
+      name: "Jump to next cursor position",
+      callback: () => this.jumpCaret(1)
+    });
+    this.registerEditorExtension([
+      import_view.EditorView.updateListener.of((update) => this.handleCaretUpdate(update))
+    ]);
     this.addSettingTab(new PageScrollSettingTab(this.app, this));
     this.app.workspace.onLayoutReady(() => {
       var _a;
@@ -245,6 +272,92 @@ var PageScrollPlugin = class extends import_obsidian.Plugin {
         this.scrollToEnd(el, attempts - 1);
       }
     });
+  }
+  // --- Caret jump-list (issue #1) -------------------------------------------
+  /** CM update listener: notice large cursor jumps and record their origin. */
+  handleCaretUpdate(update) {
+    var _a;
+    if (!update.selectionSet || this.suppressCaretRecord)
+      return;
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+    const file = (_a = view == null ? void 0 : view.file) == null ? void 0 : _a.path;
+    if (!file)
+      return;
+    const head = update.state.selection.main.head;
+    const lineObj = update.state.doc.lineAt(head);
+    const pos = {
+      file,
+      line: lineObj.number - 1,
+      ch: head - lineObj.from
+    };
+    const prev = this.lastCaret;
+    this.lastCaret = pos;
+    if (!prev)
+      return;
+    const jumped = prev.file !== pos.file || Math.abs(prev.line - pos.line) >= CARET_JUMP_THRESHOLD;
+    if (!jumped)
+      return;
+    if (this.caretIndex !== -1) {
+      this.caretHistory = this.caretHistory.slice(0, this.caretIndex + 1);
+      this.caretIndex = -1;
+    }
+    this.caretLive = null;
+    this.caretHistory.push(prev);
+    if (this.caretHistory.length > MAX_CARET_HISTORY)
+      this.caretHistory.shift();
+  }
+  /** Navigate the caret jump-list: dir = -1 (back) or +1 (forward). */
+  jumpCaret(dir) {
+    if (this.caretHistory.length === 0)
+      return;
+    if (dir === -1) {
+      if (this.caretIndex === -1) {
+        this.caretLive = this.lastCaret;
+        this.caretIndex = this.caretHistory.length - 1;
+      } else if (this.caretIndex > 0) {
+        this.caretIndex--;
+      } else {
+        return;
+      }
+      this.applyCaret(this.caretHistory[this.caretIndex]);
+      return;
+    }
+    if (this.caretIndex === -1)
+      return;
+    if (this.caretIndex < this.caretHistory.length - 1) {
+      this.caretIndex++;
+      this.applyCaret(this.caretHistory[this.caretIndex]);
+    } else {
+      this.caretIndex = -1;
+      if (this.caretLive)
+        this.applyCaret(this.caretLive);
+    }
+  }
+  /** Move the cursor to a remembered position (opening the file if needed). */
+  async applyCaret(pos) {
+    var _a, _b, _c;
+    this.suppressCaretRecord = true;
+    try {
+      let view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+      if (!view || ((_a = view.file) == null ? void 0 : _a.path) !== pos.file) {
+        const file = this.app.vault.getAbstractFileByPath(pos.file);
+        if (file instanceof import_obsidian.TFile) {
+          await this.app.workspace.getLeaf(false).openFile(file);
+          view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+        }
+      }
+      const editor = view == null ? void 0 : view.editor;
+      if (!editor)
+        return;
+      const line = Math.min(pos.line, editor.lineCount() - 1);
+      const ch = Math.min(pos.ch, (_c = (_b = editor.getLine(line)) == null ? void 0 : _b.length) != null ? _c : 0);
+      editor.setCursor({ line, ch });
+      editor.scrollIntoView({ from: { line, ch }, to: { line, ch } }, true);
+      editor.focus();
+      this.lastCaret = { file: pos.file, line, ch };
+    } finally {
+      window.setTimeout(() => this.suppressCaretRecord = false, 50);
+    }
   }
 };
 var PageScrollSettingTab = class extends import_obsidian.PluginSettingTab {

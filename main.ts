@@ -4,12 +4,26 @@ import {
   Plugin,
   PluginSettingTab,
   Setting,
+  TFile,
   WorkspaceContainer,
   WorkspaceWindow,
   setIcon,
 } from "obsidian";
+import { EditorView, ViewUpdate } from "@codemirror/view";
 
 type ScrollMode = "top" | "up" | "down" | "bottom";
+
+/** A remembered cursor location, for the jump-between-carets feature. */
+interface CaretPos {
+  file: string;
+  line: number;
+  ch: number;
+}
+
+/** Min line distance for a cursor move to count as a "jump" worth recording. */
+const CARET_JUMP_THRESHOLD = 10;
+/** Cap on the caret jump-list length. */
+const MAX_CARET_HISTORY = 50;
 
 interface ButtonDef {
   mode: ScrollMode;
@@ -64,6 +78,18 @@ export default class PageScrollPlugin extends Plugin {
    */
   private containers = new Map<WorkspaceContainer, HTMLElement>();
 
+  // --- Caret jump-list state (issue #1) ---
+  /** Recorded jump-origin positions, oldest → newest. */
+  private caretHistory: CaretPos[] = [];
+  /** Pointer into caretHistory while navigating; -1 means "at the live cursor". */
+  private caretIndex = -1;
+  /** The most recent cursor position seen (to detect jumps). */
+  private lastCaret: CaretPos | null = null;
+  /** Live position captured when navigation starts, so forward can return to it. */
+  private caretLive: CaretPos | null = null;
+  /** Set while we move the cursor ourselves, so it isn't recorded as a jump. */
+  private suppressCaretRecord = false;
+
   async onload() {
     await this.loadSettings();
 
@@ -75,6 +101,22 @@ export default class PageScrollPlugin extends Plugin {
         callback: () => this.scroll(def.mode),
       });
     }
+
+    this.addCommand({
+      id: "caret-jump-back",
+      name: "Jump to previous cursor position",
+      callback: () => this.jumpCaret(-1),
+    });
+    this.addCommand({
+      id: "caret-jump-forward",
+      name: "Jump to next cursor position",
+      callback: () => this.jumpCaret(1),
+    });
+
+    // Track cursor movement in the editor to build the jump-list.
+    this.registerEditorExtension([
+      EditorView.updateListener.of((update) => this.handleCaretUpdate(update)),
+    ]);
 
     this.addSettingTab(new PageScrollSettingTab(this.app, this));
 
@@ -297,6 +339,100 @@ export default class PageScrollPlugin extends Plugin {
         this.scrollToEnd(el, attempts - 1);
       }
     });
+  }
+
+  // --- Caret jump-list (issue #1) -------------------------------------------
+
+  /** CM update listener: notice large cursor jumps and record their origin. */
+  private handleCaretUpdate(update: ViewUpdate) {
+    if (!update.selectionSet || this.suppressCaretRecord) return;
+
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const file = view?.file?.path;
+    if (!file) return;
+
+    const head = update.state.selection.main.head;
+    const lineObj = update.state.doc.lineAt(head);
+    const pos: CaretPos = {
+      file,
+      line: lineObj.number - 1,
+      ch: head - lineObj.from,
+    };
+
+    const prev = this.lastCaret;
+    this.lastCaret = pos;
+    if (!prev) return;
+
+    const jumped =
+      prev.file !== pos.file ||
+      Math.abs(prev.line - pos.line) >= CARET_JUMP_THRESHOLD;
+    if (!jumped) return;
+
+    // A fresh jump invalidates any forward history.
+    if (this.caretIndex !== -1) {
+      this.caretHistory = this.caretHistory.slice(0, this.caretIndex + 1);
+      this.caretIndex = -1;
+    }
+    this.caretLive = null;
+    this.caretHistory.push(prev);
+    if (this.caretHistory.length > MAX_CARET_HISTORY) this.caretHistory.shift();
+  }
+
+  /** Navigate the caret jump-list: dir = -1 (back) or +1 (forward). */
+  private jumpCaret(dir: -1 | 1) {
+    if (this.caretHistory.length === 0) return;
+
+    if (dir === -1) {
+      if (this.caretIndex === -1) {
+        // Starting to navigate: remember the live spot for the return trip.
+        this.caretLive = this.lastCaret;
+        this.caretIndex = this.caretHistory.length - 1;
+      } else if (this.caretIndex > 0) {
+        this.caretIndex--;
+      } else {
+        return; // already at the oldest
+      }
+      this.applyCaret(this.caretHistory[this.caretIndex]);
+      return;
+    }
+
+    // Forward
+    if (this.caretIndex === -1) return; // not navigating
+    if (this.caretIndex < this.caretHistory.length - 1) {
+      this.caretIndex++;
+      this.applyCaret(this.caretHistory[this.caretIndex]);
+    } else {
+      // Past the newest origin → return to the live position.
+      this.caretIndex = -1;
+      if (this.caretLive) this.applyCaret(this.caretLive);
+    }
+  }
+
+  /** Move the cursor to a remembered position (opening the file if needed). */
+  private async applyCaret(pos: CaretPos) {
+    this.suppressCaretRecord = true;
+    try {
+      let view = this.app.workspace.getActiveViewOfType(MarkdownView);
+      if (!view || view.file?.path !== pos.file) {
+        const file = this.app.vault.getAbstractFileByPath(pos.file);
+        if (file instanceof TFile) {
+          await this.app.workspace.getLeaf(false).openFile(file);
+          view = this.app.workspace.getActiveViewOfType(MarkdownView);
+        }
+      }
+      const editor = view?.editor;
+      if (!editor) return;
+
+      const line = Math.min(pos.line, editor.lineCount() - 1);
+      const ch = Math.min(pos.ch, editor.getLine(line)?.length ?? 0);
+      editor.setCursor({ line, ch });
+      editor.scrollIntoView({ from: { line, ch }, to: { line, ch } }, true);
+      editor.focus();
+      this.lastCaret = { file: pos.file, line, ch };
+    } finally {
+      // Release after the programmatic selection change has settled.
+      window.setTimeout(() => (this.suppressCaretRecord = false), 50);
+    }
   }
 }
 
