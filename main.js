@@ -50,9 +50,9 @@ var PageScrollPlugin = class extends import_obsidian.Plugin {
   constructor() {
     super(...arguments);
     /**
-     * One button container per workspace root (main window + pop-outs).
-     * Keyed by the WorkspaceContainer so the buttons anchor to the editor
-     * area, not the whole window — they don't overlap the sidebars.
+     * One button container per Markdown pane (leaf), living inside that pane's
+     * content element. This gives every split/tab its own buttons and keeps them
+     * within the editor area (no sidebar overlap, works in pop-out windows).
      */
     this.containers = /* @__PURE__ */ new Map();
     // --- Caret jump-list state (issue #1) ---
@@ -91,30 +91,18 @@ var PageScrollPlugin = class extends import_obsidian.Plugin {
       import_view.EditorView.updateListener.of((update) => this.handleCaretUpdate(update))
     ]);
     this.addSettingTab(new PageScrollSettingTab(this.app, this));
-    this.app.workspace.onLayoutReady(() => {
-      var _a;
-      this.trackContainer(this.app.workspace.rootSplit);
-      const floating = this.app.workspace.floatingSplit;
-      (_a = floating == null ? void 0 : floating.children) == null ? void 0 : _a.forEach((c) => this.trackContainer(c));
-      this.renderAll();
-    });
+    this.app.workspace.onLayoutReady(() => this.refresh());
     this.registerEvent(
-      this.app.workspace.on("window-open", (win) => {
-        this.trackContainer(win);
-        this.renderAll();
-      })
+      this.app.workspace.on("layout-change", () => this.refresh())
     );
     this.registerEvent(
-      this.app.workspace.on(
-        "window-close",
-        (win) => this.untrackContainer(win)
-      )
+      this.app.workspace.on("active-leaf-change", () => this.refresh())
     );
     this.registerEvent(
-      this.app.workspace.on("active-leaf-change", () => this.updateVisibility())
+      this.app.workspace.on("window-open", () => this.refresh())
     );
     this.registerEvent(
-      this.app.workspace.on("layout-change", () => this.updateVisibility())
+      this.app.workspace.on("window-close", () => this.refresh())
     );
     this.registerEvent(
       this.app.workspace.on("resize", () => this.updateVisibility())
@@ -138,43 +126,45 @@ var PageScrollPlugin = class extends import_obsidian.Plugin {
     await this.saveData(this.settings);
     this.renderAll();
   }
-  // --- Window tracking ------------------------------------------------------
-  trackContainer(root) {
-    if (this.containers.has(root))
-      return;
-    const container = root.doc.body.createDiv({ cls: "pagescroll-container" });
-    this.containers.set(root, container);
-  }
+  // --- Per-pane containers --------------------------------------------------
   /**
-   * Right-edge offset (px) for a window's buttons. On the main window we add
-   * the width of the right sidebar so the buttons sit over the editor content
-   * instead of overlapping the panel; pop-outs have no sidebar.
+   * Reconcile containers with the current set of Markdown panes: add a button
+   * stack to each Markdown leaf (any window/split), drop stacks for panes that
+   * are gone or no longer Markdown, then refresh visibility.
    */
-  rightInset(root) {
-    var _a, _b;
-    const base = 12;
-    if (root !== this.app.workspace.rootSplit)
-      return base;
-    const right = this.app.workspace.rightSplit;
-    if (!right || right.collapsed)
-      return base;
-    return base + ((_b = (_a = right.containerEl) == null ? void 0 : _a.offsetWidth) != null ? _b : 0);
-  }
-  untrackContainer(root) {
-    var _a;
-    (_a = this.containers.get(root)) == null ? void 0 : _a.remove();
-    this.containers.delete(root);
-  }
-  // --- Rendering ------------------------------------------------------------
-  /** Rebuild button structure in every window, then apply visibility. */
-  renderAll() {
-    for (const [root, container] of this.containers) {
-      this.renderButtons(root, container);
+  refresh() {
+    const seen = /* @__PURE__ */ new Set();
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      if (leaf.view instanceof import_obsidian.MarkdownView) {
+        seen.add(leaf);
+        if (!this.containers.has(leaf))
+          this.createContainer(leaf);
+      }
+    });
+    for (const [leaf, container] of this.containers) {
+      if (!seen.has(leaf)) {
+        container.remove();
+        this.containers.delete(leaf);
+      }
     }
     this.updateVisibility();
   }
-  /** (Re)build the buttons inside one root's container from current settings. */
-  renderButtons(root, container) {
+  createContainer(leaf) {
+    const view = leaf.view;
+    const container = view.contentEl.createDiv({ cls: "pagescroll-container" });
+    this.containers.set(leaf, container);
+    this.renderButtons(leaf, container);
+  }
+  // --- Rendering ------------------------------------------------------------
+  /** Re-render buttons in every existing container, then refresh visibility. */
+  renderAll() {
+    for (const [leaf, container] of this.containers) {
+      this.renderButtons(leaf, container);
+    }
+    this.updateVisibility();
+  }
+  /** (Re)build the buttons inside one pane's container from current settings. */
+  renderButtons(leaf, container) {
     container.empty();
     if (!this.settings.showButtons)
       return;
@@ -186,16 +176,22 @@ var PageScrollPlugin = class extends import_obsidian.Plugin {
         attr: { "aria-label": def.label, id: `${def.mode}TriskiPageBtn` }
       });
       (0, import_obsidian.setIcon)(button, def.icon);
-      button.onclick = () => this.scroll(def.mode, root);
+      button.onclick = () => {
+        if (leaf.view instanceof import_obsidian.MarkdownView)
+          this.scroll(def.mode, leaf.view);
+      };
     }
   }
-  /** Toggle visibility classes on every root's container (cheap; event-safe). */
+  /** Toggle visibility classes on every pane's container. */
   updateVisibility() {
-    for (const [root, container] of this.containers) {
-      if (container.parentElement !== root.doc.body) {
-        root.doc.body.appendChild(container);
+    for (const [leaf, container] of this.containers) {
+      if (!(leaf.view instanceof import_obsidian.MarkdownView))
+        continue;
+      const view = leaf.view;
+      if (container.parentElement !== view.contentEl) {
+        view.contentEl.appendChild(container);
       }
-      const scrollEl = this.getScrollEl(root);
+      const scrollEl = this.getScrollEl(view);
       const noOverflow = !!scrollEl && scrollEl.scrollHeight <= scrollEl.clientHeight + 1;
       const hidden = !this.settings.showButtons || scrollEl == null || this.settings.smartHide && noOverflow;
       container.toggleClass("pagescroll-hidden", hidden);
@@ -203,43 +199,31 @@ var PageScrollPlugin = class extends import_obsidian.Plugin {
         "pagescroll-hover-only",
         this.settings.showButtons && this.settings.hoverOnly
       );
-      container.style.right = `${this.rightInset(root)}px`;
     }
   }
   // --- Scrolling ------------------------------------------------------------
-  /**
-   * The Markdown view that is the *active* pane of `root` (or of the whole
-   * workspace if `root` is omitted). Returns null for any other active view —
-   * e.g. custom plugin editors like Stashpad — so the buttons stay hidden
-   * there instead of acting on a background markdown tab.
-   */
-  getActiveMarkdownView(root) {
-    const leaf = this.app.workspace.getMostRecentLeaf(root);
-    return (leaf == null ? void 0 : leaf.view) instanceof import_obsidian.MarkdownView ? leaf.view : null;
-  }
-  /** Resolve the scrollable element for the active Markdown pane of `root`. */
-  getScrollEl(root) {
+  /** Resolve the scrollable element for a Markdown view. */
+  getScrollEl(view) {
     var _a, _b, _c, _d;
-    const view = this.getActiveMarkdownView(root);
-    if (!view)
-      return null;
     const internal = view;
     const el = view.getMode() === "preview" ? (_b = (_a = internal.previewMode) == null ? void 0 : _a.renderer) == null ? void 0 : _b.previewEl : (_d = (_c = internal.editMode) == null ? void 0 : _c.cm) == null ? void 0 : _d.scrollDOM;
     return el != null ? el : null;
   }
-  /** Page up/down distance (px) for the active pane, honoring the speed settings. */
-  pageDistance(scrollEl, root) {
-    var _a;
-    const reading = ((_a = this.getActiveMarkdownView(root)) == null ? void 0 : _a.getMode()) === "preview";
+  /** Page up/down distance (px) for a view, honoring the speed settings. */
+  pageDistance(view, scrollEl) {
+    const reading = view.getMode() === "preview";
     const percent = this.settings.separateReadingSpeed && reading ? this.settings.scrollPercentReading : this.settings.scrollPercent;
     return scrollEl.clientHeight * (percent / 100);
   }
-  /** Scroll the active Markdown pane of `root` (or the workspace's active one). */
-  scroll(mode, root) {
-    const scrollEl = this.getScrollEl(root);
+  /** Scroll a Markdown pane (defaults to the active one, for commands). */
+  scroll(mode, view) {
+    const v = view != null ? view : this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+    if (!v)
+      return;
+    const scrollEl = this.getScrollEl(v);
     if (!scrollEl)
       return;
-    const page = this.pageDistance(scrollEl, root);
+    const page = this.pageDistance(v, scrollEl);
     switch (mode) {
       case "up":
         scrollEl.scrollBy(0, -page);

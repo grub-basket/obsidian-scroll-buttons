@@ -1,9 +1,8 @@
 /* Page Scroll — on-screen navigation buttons */
 
-/* One container per window, holding the stacked buttons. */
-/* `right` is set from JS so the buttons clear the right sidebar. */
+/* One container per editor pane, positioned within that pane's content area. */
 .pagescroll-container {
-  position: fixed;
+  position: absolute;
   right: 12px;
   bottom: 12%;
   z-index: var(--layer-popover, 30);
@@ -15,9 +14,8 @@
   transition: opacity 0.15s ease-in-out;
 }
 
-/* Obsidian adds `is-mobile` to <body>; nudge the stack higher and inward. */
+/* Obsidian adds `is-mobile` to <body>; nudge the stack higher. */
 .is-mobile .pagescroll-container {
-  right: 16px;
   bottom: 40%;
 }
 

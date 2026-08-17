@@ -5,8 +5,7 @@ import {
   PluginSettingTab,
   Setting,
   TFile,
-  WorkspaceContainer,
-  WorkspaceWindow,
+  WorkspaceLeaf,
   setIcon,
 } from "obsidian";
 import { EditorView, ViewUpdate } from "@codemirror/view";
@@ -72,11 +71,11 @@ export default class PageScrollPlugin extends Plugin {
   settings: PageScrollSettings;
 
   /**
-   * One button container per workspace root (main window + pop-outs).
-   * Keyed by the WorkspaceContainer so the buttons anchor to the editor
-   * area, not the whole window — they don't overlap the sidebars.
+   * One button container per Markdown pane (leaf), living inside that pane's
+   * content element. This gives every split/tab its own buttons and keeps them
+   * within the editor area (no sidebar overlap, works in pop-out windows).
    */
-  private containers = new Map<WorkspaceContainer, HTMLElement>();
+  private containers = new Map<WorkspaceLeaf, HTMLElement>();
 
   // --- Caret jump-list state (issue #1) ---
   /** Recorded jump-origin positions, oldest → newest. */
@@ -120,38 +119,22 @@ export default class PageScrollPlugin extends Plugin {
 
     this.addSettingTab(new PageScrollSettingTab(this.app, this));
 
-    this.app.workspace.onLayoutReady(() => {
-      // Track the main window's root plus any pop-outs restored on startup.
-      this.trackContainer(this.app.workspace.rootSplit);
-      const floating = (
-        this.app.workspace as unknown as {
-          floatingSplit?: { children?: WorkspaceContainer[] };
-        }
-      ).floatingSplit;
-      floating?.children?.forEach((c) => this.trackContainer(c));
-      this.renderAll();
-    });
+    this.app.workspace.onLayoutReady(() => this.refresh());
 
+    // Panes come and go (splits, tabs, pop-out windows) — reconcile on change.
     this.registerEvent(
-      this.app.workspace.on("window-open", (win: WorkspaceWindow) => {
-        this.trackContainer(win);
-        this.renderAll();
-      })
+      this.app.workspace.on("layout-change", () => this.refresh())
     );
     this.registerEvent(
-      this.app.workspace.on("window-close", (win: WorkspaceWindow) =>
-        this.untrackContainer(win)
-      )
-    );
-
-    // Recompute visibility (smart-hide) whenever the focused pane changes.
-    this.registerEvent(
-      this.app.workspace.on("active-leaf-change", () => this.updateVisibility())
+      this.app.workspace.on("active-leaf-change", () => this.refresh())
     );
     this.registerEvent(
-      this.app.workspace.on("layout-change", () => this.updateVisibility())
+      this.app.workspace.on("window-open", () => this.refresh())
     );
-    // Sidebar resize/collapse changes the right-edge offset.
+    this.registerEvent(
+      this.app.workspace.on("window-close", () => this.refresh())
+    );
+    // Overflow (and thus smart-hide) can change on resize.
     this.registerEvent(
       this.app.workspace.on("resize", () => this.updateVisibility())
     );
@@ -179,47 +162,49 @@ export default class PageScrollPlugin extends Plugin {
     this.renderAll();
   }
 
-  // --- Window tracking ------------------------------------------------------
-
-  private trackContainer(root: WorkspaceContainer) {
-    if (this.containers.has(root)) return;
-    const container = root.doc.body.createDiv({ cls: "pagescroll-container" });
-    this.containers.set(root, container);
-  }
+  // --- Per-pane containers --------------------------------------------------
 
   /**
-   * Right-edge offset (px) for a window's buttons. On the main window we add
-   * the width of the right sidebar so the buttons sit over the editor content
-   * instead of overlapping the panel; pop-outs have no sidebar.
+   * Reconcile containers with the current set of Markdown panes: add a button
+   * stack to each Markdown leaf (any window/split), drop stacks for panes that
+   * are gone or no longer Markdown, then refresh visibility.
    */
-  private rightInset(root: WorkspaceContainer): number {
-    const base = 12;
-    if (root !== this.app.workspace.rootSplit) return base;
-    const right = this.app.workspace.rightSplit as unknown as {
-      collapsed?: boolean;
-      containerEl?: HTMLElement;
-    };
-    if (!right || right.collapsed) return base;
-    return base + (right.containerEl?.offsetWidth ?? 0);
-  }
-
-  private untrackContainer(root: WorkspaceContainer) {
-    this.containers.get(root)?.remove();
-    this.containers.delete(root);
-  }
-
-  // --- Rendering ------------------------------------------------------------
-
-  /** Rebuild button structure in every window, then apply visibility. */
-  private renderAll() {
-    for (const [root, container] of this.containers) {
-      this.renderButtons(root, container);
+  private refresh() {
+    const seen = new Set<WorkspaceLeaf>();
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      if (leaf.view instanceof MarkdownView) {
+        seen.add(leaf);
+        if (!this.containers.has(leaf)) this.createContainer(leaf);
+      }
+    });
+    for (const [leaf, container] of this.containers) {
+      if (!seen.has(leaf)) {
+        container.remove();
+        this.containers.delete(leaf);
+      }
     }
     this.updateVisibility();
   }
 
-  /** (Re)build the buttons inside one root's container from current settings. */
-  private renderButtons(root: WorkspaceContainer, container: HTMLElement) {
+  private createContainer(leaf: WorkspaceLeaf) {
+    const view = leaf.view as MarkdownView;
+    const container = view.contentEl.createDiv({ cls: "pagescroll-container" });
+    this.containers.set(leaf, container);
+    this.renderButtons(leaf, container);
+  }
+
+  // --- Rendering ------------------------------------------------------------
+
+  /** Re-render buttons in every existing container, then refresh visibility. */
+  private renderAll() {
+    for (const [leaf, container] of this.containers) {
+      this.renderButtons(leaf, container);
+    }
+    this.updateVisibility();
+  }
+
+  /** (Re)build the buttons inside one pane's container from current settings. */
+  private renderButtons(leaf: WorkspaceLeaf, container: HTMLElement) {
     container.empty();
     if (!this.settings.showButtons) return;
 
@@ -231,22 +216,24 @@ export default class PageScrollPlugin extends Plugin {
         attr: { "aria-label": def.label, id: `${def.mode}TriskiPageBtn` },
       });
       setIcon(button, def.icon);
-      button.onclick = () => this.scroll(def.mode, root);
+      button.onclick = () => {
+        if (leaf.view instanceof MarkdownView) this.scroll(def.mode, leaf.view);
+      };
     }
   }
 
-  /** Toggle visibility classes on every root's container (cheap; event-safe). */
+  /** Toggle visibility classes on every pane's container. */
   private updateVisibility() {
-    for (const [root, container] of this.containers) {
-      // Re-attach if Obsidian ever detaches the container (issue #4: buttons
-      // stop working / get buried). Stacking is handled by z-index in styles.css.
-      if (container.parentElement !== root.doc.body) {
-        root.doc.body.appendChild(container);
+    for (const [leaf, container] of this.containers) {
+      if (!(leaf.view instanceof MarkdownView)) continue;
+      const view = leaf.view;
+      // Re-attach if the view was rebuilt (mode switch) or detached (issue #4).
+      // Stacking above content is handled by z-index in styles.css.
+      if (container.parentElement !== view.contentEl) {
+        view.contentEl.appendChild(container);
       }
-      const scrollEl = this.getScrollEl(root);
-      // Always hide when the active pane isn't a Markdown editor (e.g. Stashpad
-      // or other custom plugin views) — the buttons can't scroll those.
-      // Smart-hide additionally hides when the note has nothing to scroll.
+      const scrollEl = this.getScrollEl(view);
+      // Smart-hide: also hide when the note is too short to scroll.
       const noOverflow =
         !!scrollEl && scrollEl.scrollHeight <= scrollEl.clientHeight + 1;
       const hidden =
@@ -258,29 +245,13 @@ export default class PageScrollPlugin extends Plugin {
         "pagescroll-hover-only",
         this.settings.showButtons && this.settings.hoverOnly
       );
-      // Keep the buttons clear of the right sidebar (main window only).
-      container.style.right = `${this.rightInset(root)}px`;
     }
   }
 
   // --- Scrolling ------------------------------------------------------------
 
-  /**
-   * The Markdown view that is the *active* pane of `root` (or of the whole
-   * workspace if `root` is omitted). Returns null for any other active view —
-   * e.g. custom plugin editors like Stashpad — so the buttons stay hidden
-   * there instead of acting on a background markdown tab.
-   */
-  private getActiveMarkdownView(root?: WorkspaceContainer): MarkdownView | null {
-    const leaf = this.app.workspace.getMostRecentLeaf(root as never);
-    return leaf?.view instanceof MarkdownView ? leaf.view : null;
-  }
-
-  /** Resolve the scrollable element for the active Markdown pane of `root`. */
-  private getScrollEl(root?: WorkspaceContainer): HTMLElement | null {
-    const view = this.getActiveMarkdownView(root);
-    if (!view) return null;
-
+  /** Resolve the scrollable element for a Markdown view. */
+  private getScrollEl(view: MarkdownView): HTMLElement | null {
     const internal = view as unknown as {
       previewMode?: { renderer?: { previewEl?: HTMLElement } };
       editMode?: { cm?: { scrollDOM?: HTMLElement } };
@@ -292,9 +263,9 @@ export default class PageScrollPlugin extends Plugin {
     return el ?? null;
   }
 
-  /** Page up/down distance (px) for the active pane, honoring the speed settings. */
-  private pageDistance(scrollEl: HTMLElement, root?: WorkspaceContainer): number {
-    const reading = this.getActiveMarkdownView(root)?.getMode() === "preview";
+  /** Page up/down distance (px) for a view, honoring the speed settings. */
+  private pageDistance(view: MarkdownView, scrollEl: HTMLElement): number {
+    const reading = view.getMode() === "preview";
     const percent =
       this.settings.separateReadingSpeed && reading
         ? this.settings.scrollPercentReading
@@ -302,12 +273,14 @@ export default class PageScrollPlugin extends Plugin {
     return scrollEl.clientHeight * (percent / 100);
   }
 
-  /** Scroll the active Markdown pane of `root` (or the workspace's active one). */
-  scroll(mode: ScrollMode, root?: WorkspaceContainer) {
-    const scrollEl = this.getScrollEl(root);
+  /** Scroll a Markdown pane (defaults to the active one, for commands). */
+  scroll(mode: ScrollMode, view?: MarkdownView) {
+    const v = view ?? this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (!v) return;
+    const scrollEl = this.getScrollEl(v);
     if (!scrollEl) return;
 
-    const page = this.pageDistance(scrollEl, root);
+    const page = this.pageDistance(v, scrollEl);
     switch (mode) {
       case "up":
         scrollEl.scrollBy(0, -page);
