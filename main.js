@@ -163,22 +163,69 @@ var PageScrollPlugin = class extends import_obsidian.Plugin {
     }
     this.updateVisibility();
   }
+  /**
+   * How many buttons fit stacked in this pane, and whether an overflow menu is
+   * needed. When the pane is too short, buttons fold into a single menu button;
+   * at the smallest, that one menu button holds all of them.
+   */
+  layout(view, enabledCount) {
+    const paneH = view.contentEl.clientHeight;
+    if (!paneH)
+      return { visible: enabledCount, menu: false };
+    const SLOT = 34;
+    const usable = paneH * 0.85;
+    const fit = Math.max(1, Math.floor(usable / SLOT));
+    if (fit >= enabledCount)
+      return { visible: enabledCount, menu: false };
+    return { visible: Math.max(0, fit - 1), menu: true };
+  }
+  /** Signature of the desired layout, to detect when a re-render is needed. */
+  layoutSig(view) {
+    const enabled = BUTTON_DEFS.filter((d) => this.settings.enabledButtons[d.mode]);
+    if (!this.settings.showButtons || enabled.length === 0)
+      return "none";
+    const { visible, menu } = this.layout(view, enabled.length);
+    return `${visible}${menu ? "m" : ""}`;
+  }
   /** (Re)build the buttons inside one pane's container from current settings. */
   renderButtons(leaf, container) {
     container.empty();
-    if (!this.settings.showButtons)
+    const view = leaf.view;
+    container.dataset.sig = view instanceof import_obsidian.MarkdownView ? this.layoutSig(view) : "none";
+    if (!this.settings.showButtons || !(view instanceof import_obsidian.MarkdownView))
       return;
-    for (const def of BUTTON_DEFS) {
-      if (!this.settings.enabledButtons[def.mode])
-        continue;
+    const enabled = BUTTON_DEFS.filter((d) => this.settings.enabledButtons[d.mode]);
+    if (enabled.length === 0)
+      return;
+    const { visible, menu } = this.layout(view, enabled.length);
+    const shown = enabled.slice(0, visible);
+    const overflow = enabled.slice(visible);
+    const scrollFrom = (mode) => {
+      if (leaf.view instanceof import_obsidian.MarkdownView)
+        this.scroll(mode, leaf.view);
+    };
+    for (const def of shown) {
       const button = container.createEl("button", {
         cls: ["pagescroll-button", "clickable-icon"],
         attr: { "aria-label": def.label, id: `${def.mode}TriskiPageBtn` }
       });
       (0, import_obsidian.setIcon)(button, def.icon);
-      button.onclick = () => {
-        if (leaf.view instanceof import_obsidian.MarkdownView)
-          this.scroll(def.mode, leaf.view);
+      button.onclick = () => scrollFrom(def.mode);
+    }
+    if (menu && overflow.length) {
+      const menuBtn = container.createEl("button", {
+        cls: ["pagescroll-button", "clickable-icon"],
+        attr: { "aria-label": "Scroll actions" }
+      });
+      (0, import_obsidian.setIcon)(menuBtn, "ellipsis-vertical");
+      menuBtn.onclick = (evt) => {
+        const m = new import_obsidian.Menu();
+        for (const def of overflow) {
+          m.addItem(
+            (item) => item.setTitle(def.label).setIcon(def.icon).onClick(() => scrollFrom(def.mode))
+          );
+        }
+        m.showAtMouseEvent(evt);
       };
     }
   }
@@ -190,6 +237,9 @@ var PageScrollPlugin = class extends import_obsidian.Plugin {
       const view = leaf.view;
       if (container.parentElement !== view.contentEl) {
         view.contentEl.appendChild(container);
+      }
+      if (container.dataset.sig !== this.layoutSig(view)) {
+        this.renderButtons(leaf, container);
       }
       const scrollEl = this.getScrollEl(view);
       const noOverflow = !!scrollEl && scrollEl.scrollHeight <= scrollEl.clientHeight + 1;

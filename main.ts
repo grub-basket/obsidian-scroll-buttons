@@ -1,6 +1,7 @@
 import {
   App,
   MarkdownView,
+  Menu,
   Plugin,
   PluginSettingTab,
   Setting,
@@ -203,21 +204,78 @@ export default class PageScrollPlugin extends Plugin {
     this.updateVisibility();
   }
 
+  /**
+   * How many buttons fit stacked in this pane, and whether an overflow menu is
+   * needed. When the pane is too short, buttons fold into a single menu button;
+   * at the smallest, that one menu button holds all of them.
+   */
+  private layout(
+    view: MarkdownView,
+    enabledCount: number
+  ): { visible: number; menu: boolean } {
+    const paneH = view.contentEl.clientHeight;
+    if (!paneH) return { visible: enabledCount, menu: false }; // not laid out yet
+    const SLOT = 34; // button (28px) + gap (6px)
+    const usable = paneH * 0.85; // stack rises above the bottom-12% anchor
+    const fit = Math.max(1, Math.floor(usable / SLOT));
+    if (fit >= enabledCount) return { visible: enabledCount, menu: false };
+    // Reserve one slot for the menu button; the rest of the slots show buttons.
+    return { visible: Math.max(0, fit - 1), menu: true };
+  }
+
+  /** Signature of the desired layout, to detect when a re-render is needed. */
+  private layoutSig(view: MarkdownView): string {
+    const enabled = BUTTON_DEFS.filter((d) => this.settings.enabledButtons[d.mode]);
+    if (!this.settings.showButtons || enabled.length === 0) return "none";
+    const { visible, menu } = this.layout(view, enabled.length);
+    return `${visible}${menu ? "m" : ""}`;
+  }
+
   /** (Re)build the buttons inside one pane's container from current settings. */
   private renderButtons(leaf: WorkspaceLeaf, container: HTMLElement) {
     container.empty();
-    if (!this.settings.showButtons) return;
+    const view = leaf.view;
+    container.dataset.sig =
+      view instanceof MarkdownView ? this.layoutSig(view) : "none";
+    if (!this.settings.showButtons || !(view instanceof MarkdownView)) return;
 
-    for (const def of BUTTON_DEFS) {
-      if (!this.settings.enabledButtons[def.mode]) continue;
+    const enabled = BUTTON_DEFS.filter((d) => this.settings.enabledButtons[d.mode]);
+    if (enabled.length === 0) return;
 
+    const { visible, menu } = this.layout(view, enabled.length);
+    const shown = enabled.slice(0, visible);
+    const overflow = enabled.slice(visible);
+
+    const scrollFrom = (mode: ScrollMode) => {
+      if (leaf.view instanceof MarkdownView) this.scroll(mode, leaf.view);
+    };
+
+    for (const def of shown) {
       const button = container.createEl("button", {
         cls: ["pagescroll-button", "clickable-icon"],
         attr: { "aria-label": def.label, id: `${def.mode}TriskiPageBtn` },
       });
       setIcon(button, def.icon);
-      button.onclick = () => {
-        if (leaf.view instanceof MarkdownView) this.scroll(def.mode, leaf.view);
+      button.onclick = () => scrollFrom(def.mode);
+    }
+
+    if (menu && overflow.length) {
+      const menuBtn = container.createEl("button", {
+        cls: ["pagescroll-button", "clickable-icon"],
+        attr: { "aria-label": "Scroll actions" },
+      });
+      setIcon(menuBtn, "ellipsis-vertical");
+      menuBtn.onclick = (evt) => {
+        const m = new Menu();
+        for (const def of overflow) {
+          m.addItem((item) =>
+            item
+              .setTitle(def.label)
+              .setIcon(def.icon)
+              .onClick(() => scrollFrom(def.mode))
+          );
+        }
+        m.showAtMouseEvent(evt);
       };
     }
   }
@@ -231,6 +289,10 @@ export default class PageScrollPlugin extends Plugin {
       // Stacking above content is handled by z-index in styles.css.
       if (container.parentElement !== view.contentEl) {
         view.contentEl.appendChild(container);
+      }
+      // Re-render if the pane height changed the compaction level.
+      if (container.dataset.sig !== this.layoutSig(view)) {
+        this.renderButtons(leaf, container);
       }
       const scrollEl = this.getScrollEl(view);
       // Smart-hide: also hide when the note is too short to scroll.
