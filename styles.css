@@ -39,6 +39,20 @@
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-s, 4px);
   cursor: pointer;
+
+  /* Symmetric padding. Obsidian's own `.clickable-icon` pads 4px top/bottom but
+     6px left/right, which on a fixed 28px border-box leaves only 14px of width
+     for an 18px icon — and a flex item is allowed to shrink, so the chevrons
+     rendered 14x18 instead of 18x18. 4px all round leaves exactly 18px. */
+  padding: 4px;
+}
+
+/* Belt and braces: pin the icon to its intended square and forbid the shrink
+   that squashed it, so a theme changing the padding cannot bring the bug back. */
+.pagescroll-button .svg-icon {
+  width: var(--icon-size, 18px);
+  height: var(--icon-size, 18px);
+  flex: 0 0 auto;
 }
 
 .pagescroll-button:hover {

@@ -1,7 +1,7 @@
 {
 	"id": "page-scroll",
 	"name": "Page Scroll",
-	"version": "1.2.2",
+	"version": "1.2.3",
 	"minAppVersion": "0.15.0",
 	"description": "Page Up|Down|Top|Bottom",
 	"author": "Human",
