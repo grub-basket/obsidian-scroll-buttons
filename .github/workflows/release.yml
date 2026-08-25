@@ -9,6 +9,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Verify versions.json covers this release
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! jq -e --arg v "$TAG" 'has($v)' versions.json >/dev/null; then
+            echo "versions.json has no entry for $TAG — add \"$TAG\": \"<minAppVersion>\"" >&2
+            exit 1
+          fi
       - env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
