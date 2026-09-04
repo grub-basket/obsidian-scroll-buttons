@@ -249,6 +249,9 @@ export default class PageScrollPlugin extends Plugin {
     const scrollFrom = (mode: ScrollMode) => {
       if (leaf.view instanceof MarkdownView) this.scroll(mode, leaf.view);
     };
+    // Keep the caret/focus in the editor — a plain button click would blur it.
+    const keepFocus = (el: HTMLElement) =>
+      el.addEventListener("mousedown", (e) => e.preventDefault());
 
     for (const def of shown) {
       const button = container.createEl("button", {
@@ -256,6 +259,7 @@ export default class PageScrollPlugin extends Plugin {
         attr: { "aria-label": def.label, id: `${def.mode}TriskiPageBtn` },
       });
       setIcon(button, def.icon);
+      keepFocus(button);
       button.onclick = () => scrollFrom(def.mode);
     }
 
@@ -265,6 +269,7 @@ export default class PageScrollPlugin extends Plugin {
         attr: { "aria-label": "Scroll actions" },
       });
       setIcon(menuBtn, "ellipsis-vertical");
+      keepFocus(menuBtn);
       menuBtn.onclick = (evt) => {
         const m = new Menu();
         for (const def of overflow) {

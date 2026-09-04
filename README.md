@@ -33,3 +33,6 @@ Originally created by [triski](https://github.com/chenshutian9610) as
 [obsidian-pagescroll-plugin](https://github.com/chenshutian9610/obsidian-pagescroll-plugin).
 This is an independent continuation with added settings, multi-window support, and
 fixes. Licensed under MIT (see `LICENSE`).
+
+Thanks to [nowell-morris](https://github.com/nowell-morris), whose independent fork
+contributed the technique for keeping editor focus when a scroll button is clicked.

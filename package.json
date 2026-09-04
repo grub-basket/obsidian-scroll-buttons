@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-scroll-buttons",
-	"version": "1.2.3",
+	"version": "1.2.4",
 	"description": "Page Up|Down|Top|Bottom buttons and commands for Obsidian",
 	"main": "main.js",
 	"scripts": {

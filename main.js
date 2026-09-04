@@ -204,12 +204,14 @@ var PageScrollPlugin = class extends import_obsidian.Plugin {
       if (leaf.view instanceof import_obsidian.MarkdownView)
         this.scroll(mode, leaf.view);
     };
+    const keepFocus = (el) => el.addEventListener("mousedown", (e) => e.preventDefault());
     for (const def of shown) {
       const button = container.createEl("button", {
         cls: ["pagescroll-button", "clickable-icon"],
         attr: { "aria-label": def.label, id: `${def.mode}TriskiPageBtn` }
       });
       (0, import_obsidian.setIcon)(button, def.icon);
+      keepFocus(button);
       button.onclick = () => scrollFrom(def.mode);
     }
     if (menu && overflow.length) {
@@ -218,6 +220,7 @@ var PageScrollPlugin = class extends import_obsidian.Plugin {
         attr: { "aria-label": "Scroll actions" }
       });
       (0, import_obsidian.setIcon)(menuBtn, "ellipsis-vertical");
+      keepFocus(menuBtn);
       menuBtn.onclick = (evt) => {
         const m = new import_obsidian.Menu();
         for (const def of overflow) {
