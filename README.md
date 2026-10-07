@@ -1,3 +1,18 @@
+> [!IMPORTANT]
+> **This plugin has moved to [Scroll Buttons](https://github.com/grub-basket/scroll-buttons).**
+> This repo gets no further updates. Scroll Buttons is a from-scratch rewrite with the
+> same buttons and settings, plus fixes.
+>
+> To switch:
+> 1. In BRAT, add the beta plugin `grub-basket/scroll-buttons` (or install **Scroll Buttons**
+>    from Community plugins once it's listed there).
+> 2. Enable Scroll Buttons. Your Page Scroll settings are copied over automatically the
+>    first time it runs.
+> 3. Disable and remove Page Scroll (and remove `grub-basket/obsidian-scroll-buttons` from BRAT),
+>    otherwise you'll see two sets of buttons.
+> 4. If you set custom hotkeys for the Page Scroll commands, assign them again to the
+>    matching Scroll Buttons commands.
+
 ### Introduce
 
 原意是给墨水屏设备使用，因为正常地翻页会有残影，四个按钮分别是跳到顶部/向上翻页/向下翻页/跳到底部
